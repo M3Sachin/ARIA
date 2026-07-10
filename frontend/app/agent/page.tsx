@@ -539,7 +539,7 @@ export default function AgentPage() {
     setWarningCountdown(60);
     let secs = 60;
     if (countdownRef.current) clearInterval(countdownRef.current);
-    countdownRef.current = setInterval(() => {
+    countdownRef.current = window.setInterval(() => {
       secs--;
       setWarningCountdown(secs);
       if (secs <= 0 && countdownRef.current) clearInterval(countdownRef.current);
