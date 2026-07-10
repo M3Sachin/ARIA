@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { getMe, logout, getDocuments, deleteDocument } from "@/lib/api";
+import { useInactivityLogout } from "@/lib/useInactivityLogout";
 import UploadDock from "@/components/UploadDock";
 
 interface Doc {
@@ -54,6 +55,13 @@ export default function AdminPage() {
     await logout();
     router.replace("/login");
   }
+
+  const handleAutoLogout = useCallback(async () => {
+    await logout();
+    router.replace("/login");
+  }, [router]);
+
+  useInactivityLogout({ timeoutMs: (parseInt(process.env.NEXT_PUBLIC_INACTIVITY_TIMEOUT_MINUTES || "15", 10)) * 60 * 1000, onLogout: handleAutoLogout });
 
   if (!user) {
     return (

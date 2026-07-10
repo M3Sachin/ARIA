@@ -54,6 +54,8 @@ class Settings(BaseSettings):
 
     # Auth
     ws_ticket_token_bytes: int = 32
+    max_login_attempts: int = 5
+    lockout_minutes: int = 15
 
     @model_validator(mode="after")
     def enforce_production_secrets(self) -> "Settings":

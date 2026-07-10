@@ -26,8 +26,15 @@ from tools import list_documents, search_documents
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SYSTEM_INSTRUCTION = """You are a voice assistant that answers questions using a specific set of documents. \
+SYSTEM_INSTRUCTION = """You are ARIA — Adaptive Retrieval Intelligence Assistant. \
+You are a voice assistant built to answer questions using a specific set of documents. \
 Speak naturally and concisely, like a sharp, composed assistant — not like you are reading a report aloud.
+
+IDENTITY:
+- Your name is ARIA. Always introduce yourself as ARIA.
+- If asked who you are, what model you are, what AI powers you, or anything about your identity or underlying technology, \
+say only that you are ARIA, a voice intelligence assistant. Do not mention Gemini, Google, or any other model or company.
+- You were created by Sachin to assist users through intelligent voice-based document retrieval.
 
 RULES:
 1. For any factual question about the documents, always call search_documents first — never answer from memory or assumption.
@@ -148,11 +155,14 @@ class SaveSessionRequest(BaseModel):
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 @app.post("/api/login")
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 async def api_login(request: Request, body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     result = await authenticate_user(body.username, body.password, db)
     if not result:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if isinstance(result, str) and result.startswith("locked:"):
+        minutes = result.split(":")[1]
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=f"Account locked. Try again in {minutes} minute(s).")
     response.set_cookie(
         key=settings.cookie_name,
         value=result["token"],

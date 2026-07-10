@@ -49,10 +49,27 @@ async def seed_users(db: AsyncSession) -> None:
     logger.info("Users seeded.")
 
 
-async def authenticate_user(username: str, password: str, db: AsyncSession) -> dict | None:
+async def authenticate_user(username: str, password: str, db: AsyncSession) -> dict | None | str:
     user = await db.scalar(select(User).where(User.username == username))
-    if not user or not bcrypt.checkpw(password.encode(), user.password_hash.encode()):
+    if not user:
         return None
+
+    now = datetime.now(timezone.utc)
+    if user.locked_until and user.locked_until > now:
+        remaining = int((user.locked_until - now).total_seconds() // 60) + 1
+        return f"locked:{remaining}"
+
+    if not bcrypt.checkpw(password.encode(), user.password_hash.encode()):
+        user.failed_attempts += 1
+        if user.failed_attempts >= settings.max_login_attempts:
+            user.locked_until = now + timedelta(minutes=settings.lockout_minutes)
+            logger.warning("Account locked: %s (too many failed attempts)", username)
+        await db.commit()
+        return None
+
+    user.failed_attempts = 0
+    user.locked_until = None
+    await db.commit()
     return {
         "username": user.username,
         "role": user.role,

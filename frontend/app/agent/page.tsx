@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getMe, getWsTicket, buildWsUrl, logout, saveSession, getSessions, deleteDbSession, clearDbSessions } from "@/lib/api";
+import { useInactivityLogout } from "@/lib/useInactivityLogout";
 import { AudioCapture } from "@/lib/audioCapture";
 import { AudioPlayback } from "@/lib/audioPlayback";
 import TranscriptPanel, { type Message } from "@/components/TranscriptPanel";
@@ -315,6 +316,10 @@ export default function AgentPage() {
   const [sources,  setSources]  = useState<CitedSource[]>([]);
   const [tick,     setTick]     = useState(0);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(0);
+  const [inactivityWarning, setInactivityWarning] = useState(false);
+  const [warningCountdown, setWarningCountdown] = useState(60);
+  const countdownRef = useRef<number | null>(null);
   const sessionIdRef    = useRef(0);
   const messagesRef     = useRef<Message[]>([]);       // always-current snapshot for disconnect()
   const sessionSavedRef = useRef(false);               // prevent double-save in React StrictMode
@@ -343,6 +348,13 @@ export default function AgentPage() {
   useEffect(() => {
     orbAmpRef.current = state === "speaking" ? spkAmp : micAmp;
   }, [state, spkAmp, micAmp]);
+
+  useEffect(() => {
+    setWindowWidth(window.innerWidth);
+    const onResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   useEffect(() => {
     getMe().then(setUser).catch(() => router.replace("/login"));
@@ -514,13 +526,46 @@ export default function AgentPage() {
   }, []);
 
   useEffect(() => () => { disconnect(); }, [disconnect]);
-  async function handleLogout() { disconnect(); await logout(); router.replace("/login"); }
+  const handleLogout = async () => { disconnect(); await logout(); router.replace("/login"); };
 
-  const c      = COLORS[state];
-  const isLive = state !== "disconnected" && state !== "connecting";
-  const amp    = state === "speaking" ? spkAmp : micAmp;
-  const pulse  = 1 + amp * 0.45;
-  const rot    = tick;
+  const handleAutoLogout = useCallback(async () => {
+    disconnect();
+    await logout();
+    router.replace("/login");
+  }, [disconnect, router]);
+
+  const handleInactivityWarning = useCallback(() => {
+    setInactivityWarning(true);
+    setWarningCountdown(60);
+    let secs = 60;
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(() => {
+      secs--;
+      setWarningCountdown(secs);
+      if (secs <= 0 && countdownRef.current) clearInterval(countdownRef.current);
+    }, 1000);
+  }, []);
+
+  const handleInactivityReset = useCallback(() => {
+    setInactivityWarning(false);
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+  }, []);
+
+  useInactivityLogout({
+    timeoutMs: (parseInt(process.env.NEXT_PUBLIC_INACTIVITY_TIMEOUT_MINUTES || "15", 10)) * 60 * 1000,
+    onWarning: handleInactivityWarning,
+    onLogout: handleAutoLogout,
+    onReset: handleInactivityReset,
+  });
+
+  const c        = COLORS[state];
+  const isLive   = state !== "disconnected" && state !== "connecting";
+  const amp      = state === "speaking" ? spkAmp : micAmp;
+  const pulse    = 1 + amp * 0.45;
+  const rot      = tick;
+  const isMobile = windowWidth < 600;
+  const orbSize  = Math.min(360, Math.max(220, windowWidth - 60));
+  const orbScale = orbSize / 360;
   const totalMsgs = messages.length + savedSessions.reduce((n, s) => n + s.messages.length, 0);
 
   return (
@@ -530,10 +575,37 @@ export default function AgentPage() {
       fontFamily: "'Courier New', monospace", overflow: "hidden", position: "relative",
     }}>
 
+      {/* Inactivity warning banner */}
+      {inactivityWarning && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 100,
+          background: "rgba(255,160,0,0.1)",
+          borderBottom: "1px solid rgba(255,160,0,0.35)",
+          padding: "10px 20px",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          fontFamily: "'Courier New', monospace",
+          backdropFilter: "blur(10px)",
+        }}>
+          <span style={{ fontSize: isMobile ? 9 : 11, letterSpacing: "0.1em", color: "#ffaa33" }}>
+            ⚠ SESSION EXPIRES IN {warningCountdown}s — INACTIVITY DETECTED
+          </span>
+          <button
+            onClick={handleInactivityReset}
+            style={{
+              background: "transparent", border: "1px solid rgba(255,160,0,0.5)",
+              color: "#ffaa33", fontSize: 9, letterSpacing: "0.14em",
+              padding: "4px 14px", cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            STAY LOGGED IN
+          </button>
+        </div>
+      )}
+
       {/* Dot grid */}
       <div style={{
         position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none",
-        backgroundImage: `radial-gradient(${c.primary}12 1px, transparent 1px)`,
+        backgroundImage: `radial-gradient(${c.primary}30 1px, transparent 1px)`,
         backgroundSize: "28px 28px",
         maskImage: "radial-gradient(ellipse 75% 75% at 50% 50%, black 20%, transparent 100%)",
         WebkitMaskImage: "radial-gradient(ellipse 75% 75% at 50% 50%, black 20%, transparent 100%)",
@@ -550,34 +622,40 @@ export default function AgentPage() {
 
       {/* ── Header ── */}
       <header style={{
-        width: "100%", display: "flex", justifyContent: "space-between", alignItems: "flex-start",
-        padding: "16px 28px", borderBottom: `1px solid ${c.primary}22`, zIndex: 10, position: "relative",
+        width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+        padding: isMobile ? "12px 14px" : "16px 28px",
+        borderBottom: `1px solid ${c.primary}44`, zIndex: 10, position: "relative",
+        gap: 8,
       }}>
-        <div>
-          <div style={{ color: c.primary, fontSize: 26, fontWeight: 700, letterSpacing: "0.35em", textShadow: `0 0 24px ${c.primary}66` }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{
+            color: c.primary, fontWeight: 700, letterSpacing: "0.35em",
+            fontSize: isMobile ? 18 : 26,
+            textShadow: `0 0 24px ${c.primary}66`,
+          }}>
             A R I A
           </div>
-          <div style={{ color: "#5a6a7a", fontSize: 9, letterSpacing: "0.16em", marginTop: 3 }}>
-            ADAPTIVE RETRIEVAL INTELLIGENCE ASSISTANT
-          </div>
+          {!isMobile && (
+            <div style={{ color: "#5a6a7a", fontSize: 9, letterSpacing: "0.16em", marginTop: 3 }}>
+              ADAPTIVE RETRIEVAL INTELLIGENCE ASSISTANT
+            </div>
+          )}
         </div>
 
-        <div style={{ textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-          <div style={{ color: "#8a9aaa", fontSize: 11, letterSpacing: "0.09em" }}>
-            {user?.username?.toUpperCase()} · {user?.role?.toUpperCase()}
-          </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5, flexShrink: 0 }}>
           <StatusDot active={isLive} color={c.primary} />
-          <div style={{ display: "flex", gap: 7, marginTop: 2 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <button
               onClick={() => setShowTranscript(true)}
               style={{
                 background: "transparent", border: `1px solid ${c.primary}50`,
-                color: `${c.primary}cc`, fontSize: 9, letterSpacing: "0.14em",
-                padding: "4px 12px", cursor: "pointer", textTransform: "uppercase" as const,
+                color: `${c.primary}cc`, fontSize: 9, letterSpacing: "0.12em",
+                padding: isMobile ? "4px 8px" : "4px 12px",
+                cursor: "pointer", textTransform: "uppercase" as const,
                 position: "relative", borderRadius: 1,
               }}
             >
-              TRANSCRIPT
+              {isMobile ? "LOG" : "TRANSCRIPT"}
               {totalMsgs > 0 && (
                 <span style={{
                   position: "absolute", top: -5, right: -5,
@@ -593,10 +671,10 @@ export default function AgentPage() {
             <button onClick={handleLogout} style={{
               background: "transparent", border: "1px solid #334455",
               color: "#6a7a8a", fontSize: 9, letterSpacing: "0.14em",
-              padding: "4px 14px", cursor: "pointer",
-              textTransform: "uppercase" as const, borderRadius: 1,
+              padding: isMobile ? "4px 8px" : "4px 14px",
+              cursor: "pointer", textTransform: "uppercase" as const, borderRadius: 1,
             }}>
-              LOG OUT
+              {isMobile ? "EXIT" : "LOG OUT"}
             </button>
           </div>
         </div>
@@ -609,9 +687,13 @@ export default function AgentPage() {
         zIndex: 10, position: "relative",
       }}>
 
-        {/* Orb container */}
+        {/* Orb container — outer div sets responsive footprint, inner scales the 360px canvas */}
+        <div style={{ position: "relative", width: orbSize, height: orbSize, flexShrink: 0 }}>
         <div style={{
-          position: "relative", width: 360, height: 360,
+          position: "absolute", width: 360, height: 360,
+          left: "50%", top: "50%",
+          transform: `translate(-50%, -50%) scale(${orbScale})`,
+          transformOrigin: "center",
           display: "flex", alignItems: "center", justifyContent: "center",
         }}>
 
@@ -624,7 +706,7 @@ export default function AgentPage() {
           }} />
 
           {/* Outermost slow dashed ring */}
-          <Ring size={348} color={c.primary} opacity={0.10} rotation={rot * 0.12} dashed />
+          <Ring size={348} color={c.primary} opacity={0.22} rotation={rot * 0.12} dashed />
 
           {/* Canvas frequency visualizer — the hero element */}
           <OrbVisualizer
@@ -635,12 +717,12 @@ export default function AgentPage() {
           />
 
           {/* Counter-rotating dashed mid ring */}
-          <Ring size={276} color={c.primary} opacity={0.14} rotation={-rot * 0.52} dashed />
+          <Ring size={276} color={c.primary} opacity={0.28} rotation={-rot * 0.52} dashed />
 
           {/* Pulsing amplitude ring */}
           <div style={{
             position: "absolute", width: 228, height: 228, borderRadius: "50%",
-            border: `1px solid ${c.primary}38`,
+            border: `1px solid ${c.primary}66`,
             transform: `scale(${pulse}) rotate(${rot * 0.85}deg)`,
             transition: "transform 0.06s ease-out",
           }} />
@@ -648,7 +730,7 @@ export default function AgentPage() {
           {/* Inner glowing ring */}
           <div style={{
             position: "absolute", width: 192, height: 192, borderRadius: "50%",
-            border: `1.5px solid ${c.primary}60`,
+            border: `1.5px solid ${c.primary}99`,
             boxShadow: `0 0 18px ${c.glow}, inset 0 0 18px ${c.glow}`,
             transform: `rotate(${-rot * 1.05}deg)`,
           }} />
@@ -667,13 +749,16 @@ export default function AgentPage() {
             {state === "thinking" ? "⟳" : state === "speaking" ? "◈" : state === "listening" ? "◎" : "◉"}
           </div>
         </div>
+        </div>{/* end outer orbSize wrapper */}
 
         {/* ── Status text ── */}
         <div style={{ marginTop: 28, textAlign: "center", width: "100%" }}>
           <div style={{
-            color: c.primary, fontSize: 12, letterSpacing: "0.28em",
+            color: c.primary, fontSize: isMobile ? 10 : 12,
+            letterSpacing: isMobile ? "0.16em" : "0.28em",
             textTransform: "uppercase",
-            textShadow: `0 0 16px ${c.primary}55`,
+            textShadow: `0 0 16px ${c.primary}99`,
+            padding: "0 12px",
           }}>
             {STATUS_TEXT[state]}
           </div>
