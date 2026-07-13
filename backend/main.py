@@ -192,8 +192,11 @@ app.add_middleware(
 @app.middleware("http")
 async def strip_server_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers.pop("x-render-origin-server", None)
-    response.headers.pop("x-powered-by", None)
+    for header in ("x-render-origin-server", "x-powered-by"):
+        try:
+            del response.headers[header]
+        except KeyError:
+            pass
     response.headers["server"] = "ARIA"
     return response
 
