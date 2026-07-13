@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     max_login_attempts: int = 5
     lockout_minutes: int = 15
 
+    # Memsy memory (optional — leave blank to disable)
+    memsy_api_key: str = ""
+    memsy_base_url: str = "https://api.memsy.io/v1"
+    memsy_memory_score_threshold: float = 0.7
+    memsy_memory_limit: int = 5
+
     @model_validator(mode="after")
     def enforce_production_secrets(self) -> "Settings":
         if self.env.lower() != "production":

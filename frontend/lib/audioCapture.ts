@@ -10,7 +10,7 @@ export class AudioCapture {
   private analyser: AnalyserNode | null = null;
   private stream: MediaStream | null = null;
   private rafId: number | null = null;
-  private freqBuf: Uint8Array | null = null;
+  private freqBuf: Uint8Array<ArrayBuffer> | null = null;
 
   async start(callbacks: AudioCaptureCallbacks): Promise<void> {
     this.stream = await navigator.mediaDevices.getUserMedia({

@@ -81,3 +81,15 @@ async def list_documents(db: AsyncSession) -> str:
 
 async def embed_for_ingestion(text: str) -> list[float]:
     return await _embed(text, "RETRIEVAL_DOCUMENT")
+
+
+async def embed_batch_for_ingestion(texts: list[str]) -> list[list[float]]:
+    result = await get_genai_client().aio.models.embed_content(
+        model=settings.embedding_model,
+        contents=texts,
+        config=genai_types.EmbedContentConfig(
+            task_type="RETRIEVAL_DOCUMENT",
+            output_dimensionality=settings.embedding_dimensions,
+        ),
+    )
+    return [list(e.values) for e in result.embeddings]

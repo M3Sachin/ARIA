@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Aria — Voice Document Assistant",
+  title: "Aria",
   description: "Conversational voice agent over your documents",
 };
 

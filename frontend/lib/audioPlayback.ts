@@ -5,7 +5,7 @@ export class AudioPlayback {
   private analyser: AnalyserNode | null = null;
   private gain: GainNode | null = null;
   private nextStart = 0;
-  private freqBuf: Uint8Array | null = null;
+  private freqBuf: Uint8Array<ArrayBuffer> | null = null;
 
   init(): void {
     if (this.ctx) return;

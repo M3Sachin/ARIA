@@ -45,6 +45,7 @@ Built by **Sachin** using Google's Gemini Live API, FastAPI, Next.js, and pgvect
 - **Real-time voice conversation** — speak naturally; ARIA responds with sub-second latency via Gemini Live API
 - **RAG (Retrieval-Augmented Generation)** — every factual answer is grounded in your uploaded documents using pgvector cosine similarity search
 - **Multi-format ingestion** — PDF, DOCX, PPTX, XLSX, Markdown, plain text via MarkItDown
+- **Persistent memory** — Memsy-powered long-term memory remembers user preferences and context across sessions
 - **Persistent conversation history** — session transcripts saved to DB; browse and delete individual sessions
 - **Audio cues** — distinct sounds for login success, access denied, and account lockout
 - **Security hardened**
@@ -87,6 +88,7 @@ Browser
 | Ingestion | `backend/ingest.py` | MarkItDown + paragraph-aware chunking with overlap + embed + upsert |
 | Audio capture | `frontend/lib/audioCapture.ts` | AudioWorkletNode at 16 kHz PCM16, zero-copy ArrayBuffer transfer |
 | Audio playback | `frontend/lib/audioPlayback.ts` | AudioContext chain scheduling for gapless playback |
+| Memory | `backend/main.py` + Memsy | Ingest turns after each voice exchange; retrieve relevant memories before each session |
 
 ---
 
@@ -98,6 +100,7 @@ Browser
 | Node.js | 18+ | LTS recommended |
 | PostgreSQL | 15+ | Must have the **pgvector** extension |
 | Google AI API key | — | [Get one here](https://aistudio.google.com/apikey) |
+| Memsy API key | — | [Get one here](https://app.memsy.io) (optional — disables memory if omitted) |
 
 > **Neon DB (recommended for quick start):** Create a free serverless Postgres instance at [neon.tech](https://neon.tech). pgvector is pre-installed. Copy the connection string into `DATABASE_URL`.
 
@@ -136,6 +139,10 @@ GEMINI_API_KEY=your_gemini_api_key_here
 JWT_SECRET=your_random_64_char_secret_here
 ADMIN_PASSWORD=your_admin_password
 USER_PASSWORD=your_user_password
+
+# Optional — leave blank to disable memory
+MEMSY_API_KEY=msy_your_key_here
+MEMSY_BASE_URL=https://api.memsy.io/v1
 ```
 
 > **Generate a secure JWT secret:**
@@ -182,7 +189,7 @@ cp .env.local.example .env.local
 Edit `frontend/.env.local`:
 
 ```env
-NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+BACKEND_URL=http://localhost:8000
 NEXT_PUBLIC_BACKEND_WS_URL=ws://localhost:8000
 NEXT_PUBLIC_INACTIVITY_TIMEOUT_MINUTES=15
 ```
@@ -244,6 +251,8 @@ Place MP3 files in `frontend/public/` with these exact names:
 | `MAX_LOGIN_ATTEMPTS` | `5` | Failed attempts before account lockout |
 | `LOCKOUT_MINUTES` | `15` | Account lockout duration |
 | `HISTORY_CONTEXT_TURNS` | `10` | Conversation turns injected into each Gemini session |
+| `MEMSY_API_KEY` | `` | Memsy API key — leave blank to disable memory |
+| `MEMSY_BASE_URL` | `https://api.memsy.io/v1` | Memsy API base URL |
 
 See `backend/.env.example` for the full list.
 
@@ -251,9 +260,11 @@ See `backend/.env.example` for the full list.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `NEXT_PUBLIC_BACKEND_URL` | ✅ | — | Backend HTTP URL (no trailing slash) |
+| `BACKEND_URL` | ✅ | — | Backend HTTP URL — used by Next.js proxy rewrite (no trailing slash) |
 | `NEXT_PUBLIC_BACKEND_WS_URL` | ✅ | — | Backend WebSocket URL |
 | `NEXT_PUBLIC_INACTIVITY_TIMEOUT_MINUTES` | | `15` | Auto-logout after N minutes of inactivity |
+
+> `BACKEND_URL` has no `NEXT_PUBLIC_` prefix — it is a server-side build variable used by `next.config.mjs` to proxy `/api/*` requests. The browser never sees it directly.
 
 ---
 
@@ -280,7 +291,13 @@ cd frontend
 vercel --prod
 ```
 
-Set environment variables in the Vercel dashboard. Make sure `NEXT_PUBLIC_BACKEND_URL` points to your deployed backend.
+Set environment variables in the Vercel dashboard:
+
+| Variable | Value |
+|---|---|
+| `BACKEND_URL` | `https://your-backend.onrender.com` |
+| `NEXT_PUBLIC_BACKEND_WS_URL` | `wss://your-backend.onrender.com` |
+| `NEXT_PUBLIC_INACTIVITY_TIMEOUT_MINUTES` | `15` |
 
 > **CORS:** `FRONTEND_URL` in your backend env must exactly match your Vercel deployment URL — no trailing slash. Cross-origin cookies require HTTPS on both ends (`SameSite=None; Secure` is set automatically when `ENV=production`).
 
@@ -341,6 +358,7 @@ Set environment variables in the Vercel dashboard. Make sure `NEXT_PUBLIC_BACKEN
 | **Frontend** | Next.js 15 · React 18 · TypeScript |
 | **Audio** | Web Audio API · AudioWorkletNode |
 | **Auth** | JWT httponly cookie · bcrypt · account lockout |
+| **Memory** | Memsy (long-term user memory across sessions) |
 
 ---
 

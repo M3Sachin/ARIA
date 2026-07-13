@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, Optional
@@ -17,6 +18,8 @@ from slowapi.util import get_remote_address
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+from memsy import AsyncMemsyClient, EventPayload
 
 from auth import authenticate_user, consume_ws_ticket, get_current_user, issue_ws_ticket, require_admin, seed_users
 from config import settings
@@ -72,6 +75,45 @@ FUNCTION_DECLARATIONS = [
 limiter = Limiter(key_func=get_remote_address)
 
 _gemini_client: Optional[genai.Client] = None
+_memsy_client: Optional[AsyncMemsyClient] = None
+
+
+def get_memsy_client() -> Optional[AsyncMemsyClient]:
+    global _memsy_client
+    if not settings.memsy_api_key:
+        return None
+    if _memsy_client is None:
+        _memsy_client = AsyncMemsyClient(
+            base_url=settings.memsy_base_url,
+            api_key=settings.memsy_api_key,
+        )
+    return _memsy_client
+
+
+async def _ingest_turn(actor_id: str, session_id: str, user_text: str, model_text: str) -> None:
+    memsy = get_memsy_client()
+    if not memsy:
+        return
+    try:
+        await memsy.ingest([
+            EventPayload(actor_id=actor_id, session_id=session_id, kind="user_message", content=user_text),
+            EventPayload(actor_id=actor_id, session_id=session_id, kind="assistant_message", content=model_text),
+        ])
+    except Exception as e:
+        logger.warning("Memsy ingest failed: %s", e)
+
+
+async def _fetch_memories(actor_id: str, query: str) -> str:
+    memsy = get_memsy_client()
+    if not memsy or not query:
+        return ""
+    try:
+        results = await memsy.search(query, actor_id=actor_id, limit=settings.memsy_memory_limit)
+        relevant = [r.content for r in results.results if r.score >= settings.memsy_memory_score_threshold]
+        return "\n".join(relevant)
+    except Exception as e:
+        logger.warning("Memsy search failed: %s", e)
+        return ""
 
 
 def get_gemini_client() -> genai.Client:
@@ -84,8 +126,10 @@ def get_gemini_client() -> genai.Client:
     return _gemini_client
 
 
-def _build_live_config(conversation_history: list[dict] | None = None) -> genai_types.LiveConnectConfig:
+def _build_live_config(conversation_history: list[dict] | None = None, memories: str | None = None) -> genai_types.LiveConnectConfig:
     system_text = SYSTEM_INSTRUCTION
+    if memories:
+        system_text += f"\n\nUSER MEMORY (preferences and context from past sessions — use naturally, do not recite them back):\n{memories}"
     if conversation_history:
         lines = "\n\nCONVERSATION HISTORY (for context — do not repeat it back):\n"
         for entry in conversation_history[-settings.history_context_turns:]:
@@ -326,6 +370,7 @@ async def voice_websocket(websocket: WebSocket, ticket: str = Query(...)):
     conversation_history: list[dict] = []
     _user_buf: list[str] = []
     _model_buf: list[str] = []
+    ws_session_id = str(uuid.uuid4())
 
     async def send_json(data: dict) -> None:
         try:
@@ -372,16 +417,19 @@ async def voice_websocket(websocket: WebSocket, ticket: str = Query(...)):
                     _model_buf.append(chunk.strip())
 
             if getattr(content, "turn_complete", False):
+                user_turn = model_turn = ""
                 if _user_buf:
-                    full = " ".join(_user_buf)
-                    await send_json({"type": "transcript", "role": "user", "text": full})
-                    conversation_history.append({"role": "user", "text": full})
+                    user_turn = " ".join(_user_buf)
+                    await send_json({"type": "transcript", "role": "user", "text": user_turn})
+                    conversation_history.append({"role": "user", "text": user_turn})
                     _user_buf.clear()
                 if _model_buf:
-                    full = " ".join(_model_buf)
-                    await send_json({"type": "transcript", "role": "assistant", "text": full})
-                    conversation_history.append({"role": "model", "text": full})
+                    model_turn = " ".join(_model_buf)
+                    await send_json({"type": "transcript", "role": "assistant", "text": model_turn})
+                    conversation_history.append({"role": "model", "text": model_turn})
                     _model_buf.clear()
+                if user_turn and model_turn:
+                    asyncio.create_task(_ingest_turn(user["username"], ws_session_id, user_turn, model_turn))
                 if len(conversation_history) > settings.history_limit:
                     conversation_history[:] = conversation_history[-settings.history_limit:]
                 await send_json({"type": "turn_complete"})
@@ -422,7 +470,9 @@ async def voice_websocket(websocket: WebSocket, ticket: str = Query(...)):
     try:
         while browser_alive:
             try:
-                config = _build_live_config(conversation_history or None)
+                last_user_msg = next((e["text"] for e in reversed(conversation_history) if e["role"] == "user"), "")
+                memories = await _fetch_memories(user["username"], last_user_msg)
+                config = _build_live_config(conversation_history or None, memories=memories or None)
                 async with gemini.aio.live.connect(model=settings.live_model, config=config) as gemini_session:
 
                     async def audio_sender() -> None:

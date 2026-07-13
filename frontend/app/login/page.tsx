@@ -34,8 +34,17 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [focused, setFocused] = useState<string | null>(null);
 
-  function playSound(src: string) {
-    try { new Audio(src).play(); } catch { /* ignore autoplay block */ }
+  function playSound(src: string): Promise<void> {
+    return new Promise((resolve) => {
+      try {
+        const audio = new Audio(src);
+        audio.addEventListener("ended", () => resolve());
+        audio.addEventListener("error", () => resolve());
+        audio.play().catch(() => resolve());
+      } catch {
+        resolve();
+      }
+    });
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -44,7 +53,8 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await login(username, password);
-      playSound("/access-granted.mp3");
+      const timeout = new Promise<void>(r => setTimeout(r, 1000));
+      await Promise.race([playSound("/access-granted.mp3"), timeout]);
       router.replace(data.role === "admin" ? "/admin" : "/agent");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Authentication failed";

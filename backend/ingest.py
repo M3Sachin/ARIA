@@ -20,10 +20,10 @@ load_dotenv()
 
 from config import settings  # noqa: E402
 from database import Document, DocumentChunk, init_db, session_factory  # noqa: E402
-from tools import embed_for_ingestion  # noqa: E402
+from tools import embed_batch_for_ingestion  # noqa: E402
 
 from markitdown import MarkItDown
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, insert as sa_insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -90,7 +90,10 @@ async def ingest_file(path: Path, db: AsyncSession) -> None:
         with tempfile.NamedTemporaryFile(suffix=path.suffix, delete=False) as tmp:
             tmp.write(raw)
             tmp_path = tmp.name
-        text_content = MarkItDown().convert(tmp_path).text_content
+        loop = asyncio.get_event_loop()
+        text_content = await loop.run_in_executor(
+            None, lambda: MarkItDown().convert(tmp_path).text_content
+        )
     except Exception as e:
         logger.error("Conversion failed for %s: %s", path.name, e)
         doc.status = "error"
@@ -112,15 +115,27 @@ async def ingest_file(path: Path, db: AsyncSession) -> None:
     chunks = _chunk_text(text_content)
     logger.info("%d chunks from %s", len(chunks), path.name)
 
-    for idx, chunk in enumerate(chunks):
+    # Gemini batch embedding: up to 100 texts per API call
+    BATCH = 100
+    rows: list[dict] = []
+    for batch_start in range(0, len(chunks), BATCH):
+        batch = chunks[batch_start : batch_start + BATCH]
         try:
-            embedding = await embed_for_ingestion(chunk)
+            embeddings = await embed_batch_for_ingestion(batch)
         except Exception as e:
-            logger.error("Embedding chunk %d failed: %s", idx, e)
+            logger.error("Batch embedding failed at chunk %d: %s", batch_start, e)
             continue
-        db.add(DocumentChunk(document_id=doc.id, chunk_index=idx, content=chunk, embedding=embedding))
-        if idx % 10 == 0:
-            logger.info("Embedded %d/%d chunks", idx + 1, len(chunks))
+        for i, embedding in enumerate(embeddings):
+            rows.append({
+                "document_id": doc.id,
+                "chunk_index": batch_start + i,
+                "content": batch[i],
+                "embedding": embedding,
+            })
+        logger.info("Embedded %d/%d chunks", min(batch_start + BATCH, len(chunks)), len(chunks))
+
+    if rows:
+        await db.execute(sa_insert(DocumentChunk), rows)
 
     doc.status = f"ready:{content_hash}"
     await db.commit()
