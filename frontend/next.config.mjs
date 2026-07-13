@@ -9,6 +9,33 @@ const nextConfig = {
       },
     ];
   },
+
+  // F-03: security headers — clickjacking, MIME sniffing, CSP
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "microphone=(self)" },
+          {
+            key: "Content-Security-Policy",
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
+              "style-src 'self' 'unsafe-inline'",
+              "media-src 'self' blob:",
+              "connect-src 'self' wss: https:",
+              "worker-src 'self' blob:",
+              "img-src 'self' data:",
+            ].join("; "),
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

@@ -9,10 +9,11 @@ from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from google import genai
 from google.genai import types as genai_types
 from pydantic import BaseModel, Field
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy import delete as sa_delete, select
@@ -72,7 +73,15 @@ FUNCTION_DECLARATIONS = [
     ),
 ]
 
+ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".md", ".txt", ".csv", ".html"}
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
 limiter = Limiter(key_func=get_remote_address)
+
+
+# F-07: generic rate-limit error — don't expose threshold in response body
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(status_code=429, content={"detail": "Too many requests. Please try again later."})
 
 _gemini_client: Optional[genai.Client] = None
 _memsy_client: Optional[AsyncMemsyClient] = None
@@ -168,7 +177,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -177,6 +186,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# F-06: strip backend infra headers
+@app.middleware("http")
+async def strip_server_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.pop("x-render-origin-server", None)
+    response.headers.pop("x-powered-by", None)
+    response.headers["server"] = "ARIA"
+    return response
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -202,11 +221,10 @@ class SaveSessionRequest(BaseModel):
 @limiter.limit("5/minute")
 async def api_login(request: Request, body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     result = await authenticate_user(body.username, body.password, db)
-    if not result:
+    # F-04/F-05: return identical 401 for wrong creds AND locked accounts —
+    # prevents username enumeration and makes lockout-DoS unconfirmable
+    if not result or (isinstance(result, str) and result.startswith("locked:")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if isinstance(result, str) and result.startswith("locked:"):
-        minutes = result.split(":")[1]
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=f"Account locked. Try again in {minutes} minute(s).")
     response.set_cookie(
         key=settings.cookie_name,
         value=result["token"],
@@ -219,7 +237,8 @@ async def api_login(request: Request, body: LoginRequest, response: Response, db
 
 
 @app.post("/api/logout")
-async def api_logout(response: Response):
+async def api_logout(response: Response, _user: dict = Depends(get_current_user)):
+    # F-02: require valid session — prevents unauthenticated CSRF force-logout
     response.delete_cookie(key=settings.cookie_name, samesite="none", secure=True)
     return {"ok": True}
 
@@ -241,8 +260,16 @@ async def api_ws_ticket(request: Request, user: dict = Depends(get_current_user)
 @app.post("/api/upload")
 @limiter.limit("20/hour")
 async def api_upload(request: Request, file: UploadFile, _user: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    # F-01: basename only — strip any path components from filename
+    original_name = Path(file.filename or "upload").name
+    # F-08: validate extension before reading body
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"File type '{suffix}' not supported")
     contents = await file.read()
-    original_name = file.filename or "upload"
+    # F-08: reject oversized files (zip bombs, parser exploits)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
     tmp_dir = tempfile.mkdtemp()
     actual_path = Path(tmp_dir) / original_name
     try:
