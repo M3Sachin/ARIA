@@ -112,6 +112,8 @@ async def ingest_file(path: Path, db: AsyncSession) -> None:
         await db.commit()
         return
 
+    text_content = text_content.replace("\x00", "")
+
     chunks = _chunk_text(text_content)
     logger.info("%d chunks from %s", len(chunks), path.name)
 
