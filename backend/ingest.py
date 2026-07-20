@@ -90,7 +90,7 @@ async def ingest_file(path: Path, db: AsyncSession) -> None:
         with tempfile.NamedTemporaryFile(suffix=path.suffix, delete=False) as tmp:
             tmp.write(raw)
             tmp_path = tmp.name
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         text_content = await loop.run_in_executor(
             None, lambda: MarkItDown().convert(tmp_path).text_content
         )
@@ -134,12 +134,19 @@ async def ingest_file(path: Path, db: AsyncSession) -> None:
             })
         logger.info("Embedded %d/%d chunks", min(batch_start + BATCH, len(chunks)), len(chunks))
 
-    if rows:
-        await db.execute(sa_insert(DocumentChunk), rows)
+    if not rows or len(rows) < len(chunks) // 2:
+        logger.error(
+            "Embedding incomplete for %s: %d/%d chunks — marking error",
+            path.name, len(rows), len(chunks),
+        )
+        doc.status = "error"
+        await db.commit()
+        return
 
+    await db.execute(sa_insert(DocumentChunk), rows)
     doc.status = f"ready:{content_hash}"
     await db.commit()
-    logger.info("Done: %s (%d chunks)", path.name, len(chunks))
+    logger.info("Done: %s (%d/%d chunks)", path.name, len(rows), len(chunks))
 
 
 async def main(targets: list[str]) -> None:

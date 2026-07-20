@@ -41,12 +41,12 @@ class Settings(BaseSettings):
     # RAG / retrieval
     chunk_max_chars: int = 2400
     chunk_overlap_chars: int = 400
-    distance_threshold: float = 0.55
+    distance_threshold: float = 0.75
     relative_margin: float = 0.12
 
     # Conversation history
     history_limit: int = 20          # max turns kept in memory
-    history_context_turns: int = 12  # turns injected into system instruction on reconnect
+    history_context_turns: int = 6   # turns injected into system instruction on reconnect
 
     # Database connection pool
     db_pool_size: int = 5
@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     max_login_attempts: int = 5
     lockout_minutes: int = 15
 
-    # Memsy memory (optional — leave blank to disable)
+    # Memsy memory
     memsy_api_key: str = ""
     memsy_base_url: str = "https://api.memsy.io/v1"
     memsy_memory_score_threshold: float = 0.7

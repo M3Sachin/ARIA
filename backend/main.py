@@ -35,10 +35,17 @@ You are a voice assistant built to answer questions using a specific set of docu
 Speak naturally and concisely, like a sharp, composed assistant — not like you are reading a report aloud.
 
 IDENTITY:
-- Your name is ARIA. Always introduce yourself as ARIA.
+- Your name is ARIA. Introduce yourself as ARIA only on the very first message of a session.
+- After the introduction, never say your name unprompted. Only state your name again if directly asked.
 - If asked who you are, what model you are, what AI powers you, or anything about your identity or underlying technology, \
 say only that you are ARIA, a voice intelligence assistant. Do not mention Gemini, Google, or any other model or company.
-- You were created by Sachin to assist users through intelligent voice-based document retrieval.
+- You were created by Hritik to assist users through intelligent voice-based document retrieval.
+
+LANGUAGE:
+- Always detect the language the user is speaking and reply in that same language.
+- If the user switches language mid-conversation, switch immediately and stay in the new language.
+- Never default to English if the user spoke in Hindi, or any other language.
+- Once you begin a response in a language, complete the ENTIRE response in that same language. Never switch languages mid-response.
 
 RULES:
 1. For any factual question about the documents, always call search_documents first — never answer from memory or assumption.
@@ -135,22 +142,41 @@ def get_gemini_client() -> genai.Client:
     return _gemini_client
 
 
-def _build_live_config(conversation_history: list[dict] | None = None, memories: str | None = None) -> genai_types.LiveConnectConfig:
+ALLOWED_VOICES: frozenset[str] = frozenset({
+    "Puck", "Aoede", "Charon", "Kore", "Fenrir",
+    "Pulcherrima", "Rasalgethi", "Despina", "Umbriel",
+})
+
+
+def _build_live_config(
+    conversation_history: list[dict] | None = None,
+    memories: str | None = None,
+    voice_name: str | None = None,
+) -> genai_types.LiveConnectConfig:
     system_text = SYSTEM_INSTRUCTION
     if memories:
         system_text += f"\n\nUSER MEMORY (preferences and context from past sessions — use naturally, do not recite them back):\n{memories}"
     if conversation_history:
-        lines = "\n\nCONVERSATION HISTORY (for context — do not repeat it back):\n"
+        lines = "\n\nCONVERSATION HISTORY (use this to maintain full context — do not repeat it back verbatim):\n"
         for entry in conversation_history[-settings.history_context_turns:]:
-            label = "User" if entry["role"] == "user" else "Assistant (you)"
-            lines += f"{label}: {entry['text']}\n"
-        system_text += lines + "\n(Continue naturally from where the conversation left off.)"
+            if entry["role"] == "user":
+                label = "User"
+                text = entry["text"][:300]
+            elif entry["role"] == "tool":
+                label = "Document search result"
+                text = entry["text"][:200]   # trim tool results hard — they're verbose
+            else:
+                label = "Assistant (you)"
+                text = entry["text"][:300]
+            lines += f"{label}: {text}\n"
+        system_text += lines + "\n(Continue naturally. You already know what was discussed and what documents were retrieved above — do not ask again for information already covered.)"
 
+    selected_voice = voice_name if voice_name in ALLOWED_VOICES else settings.voice_name
     return genai_types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         speech_config=genai_types.SpeechConfig(
             voice_config=genai_types.VoiceConfig(
-                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=settings.voice_name)
+                prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(voice_name=selected_voice)
             )
         ),
         input_audio_transcription=genai_types.AudioTranscriptionConfig(),
@@ -319,8 +345,6 @@ async def api_save_session(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not body.messages:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No messages to save")
     voice_session = VoiceSession(username=user["username"], message_count=len(body.messages))
     db.add(voice_session)
     await db.flush()
@@ -384,7 +408,7 @@ async def health():
 # ── Voice WebSocket ───────────────────────────────────────────────────────────
 
 @app.websocket("/ws/voice")
-async def voice_websocket(websocket: WebSocket, ticket: str = Query(...)):
+async def voice_websocket(websocket: WebSocket, ticket: str = Query(...), voice: str = Query(default="")):
     async with session_factory() as db:
         user = await consume_ws_ticket(ticket, db)
     if not user:
@@ -485,11 +509,14 @@ async def voice_websocket(websocket: WebSocket, ticket: str = Query(...)):
                         tool_result = await list_documents(db)
                     else:
                         tool_result = f"Unknown tool: {fc.name}"
+                # store abbreviated tool result so next reconnect has context
+                summary = tool_result[:600] + ("…" if len(tool_result) > 600 else "")
                 await gemini_session.send_tool_response(
                     function_responses=[
                         genai_types.FunctionResponse(name=fc.name, id=fc.id, response={"result": tool_result})
                     ]
                 )
+                conversation_history.append({"role": "tool", "text": f"[{fc.name}({args.get('query', '')})] {summary}"})
                 await send_json({"type": "status", "state": "speaking"})
 
         if getattr(response, "setup_complete", None):
@@ -502,7 +529,7 @@ async def voice_websocket(websocket: WebSocket, ticket: str = Query(...)):
             try:
                 last_user_msg = next((e["text"] for e in reversed(conversation_history) if e["role"] == "user"), "")
                 memories = await _fetch_memories(user["username"], last_user_msg)
-                config = _build_live_config(conversation_history or None, memories=memories or None)
+                config = _build_live_config(conversation_history or None, memories=memories or None, voice_name=voice or None)
                 async with gemini.aio.live.connect(model=settings.live_model, config=config) as gemini_session:
 
                     async def audio_sender() -> None:

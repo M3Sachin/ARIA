@@ -319,6 +319,7 @@ export default function AgentPage() {
   const [windowWidth, setWindowWidth] = useState(0);
   const [inactivityWarning, setInactivityWarning] = useState(false);
   const [warningCountdown, setWarningCountdown] = useState(60);
+  const [selectedVoice, setSelectedVoice] = useState("Aoede");
   const countdownRef = useRef<number | null>(null);
   const sessionIdRef    = useRef(0);
   const messagesRef     = useRef<Message[]>([]);       // always-current snapshot for disconnect()
@@ -407,7 +408,7 @@ export default function AgentPage() {
     try { ticket = await getWsTicket(); }
     catch { setState("disconnected"); return; }
 
-    const ws = new WebSocket(buildWsUrl(ticket));
+    const ws = new WebSocket(buildWsUrl(ticket, selectedVoice));
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
@@ -427,7 +428,9 @@ export default function AgentPage() {
       try {
         await capture.start({
           onPCMData: (pcm) => {
-            if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(pcm);
+            if (wsRef.current?.readyState === WebSocket.OPEN && stateRef.current !== "speaking") {
+              wsRef.current.send(pcm);
+            }
           },
           onAmplitude: (rms) => {
             setMicAmp(rms);
@@ -477,7 +480,7 @@ export default function AgentPage() {
       playRef.current?.destroy(); playRef.current = null;
       setState("disconnected"); setMicAmp(0); setSpkAmp(0);
     };
-  }, []);
+  }, [selectedVoice]);
 
   const disconnect = useCallback(() => {
     // Guard: only save once per session regardless of how many times this
@@ -562,7 +565,6 @@ export default function AgentPage() {
   const isLive   = state !== "disconnected" && state !== "connecting";
   const amp      = state === "speaking" ? spkAmp : micAmp;
   const pulse    = 1 + amp * 0.45;
-  const rot      = tick;
   const isMobile = windowWidth < 600;
   const orbSize  = Math.min(360, Math.max(220, windowWidth - 60));
   const orbScale = orbSize / 360;
@@ -706,7 +708,7 @@ export default function AgentPage() {
           }} />
 
           {/* Outermost slow dashed ring */}
-          <Ring size={348} color={c.primary} opacity={0.22} rotation={rot * 0.12} dashed />
+          <Ring size={348} color={c.primary} opacity={0.22} rotation={tick * 0.12} dashed />
 
           {/* Canvas frequency visualizer — the hero element */}
           <OrbVisualizer
@@ -717,13 +719,13 @@ export default function AgentPage() {
           />
 
           {/* Counter-rotating dashed mid ring */}
-          <Ring size={276} color={c.primary} opacity={0.28} rotation={-rot * 0.52} dashed />
+          <Ring size={276} color={c.primary} opacity={0.28} rotation={-tick * 0.52} dashed />
 
           {/* Pulsing amplitude ring */}
           <div style={{
             position: "absolute", width: 228, height: 228, borderRadius: "50%",
             border: `1px solid ${c.primary}66`,
-            transform: `scale(${pulse}) rotate(${rot * 0.85}deg)`,
+            transform: `scale(${pulse}) rotate(${tick * 0.85}deg)`,
             transition: "transform 0.06s ease-out",
           }} />
 
@@ -732,7 +734,7 @@ export default function AgentPage() {
             position: "absolute", width: 192, height: 192, borderRadius: "50%",
             border: `1.5px solid ${c.primary}99`,
             boxShadow: `0 0 18px ${c.glow}, inset 0 0 18px ${c.glow}`,
-            transform: `rotate(${-rot * 1.05}deg)`,
+            transform: `rotate(${-tick * 1.05}deg)`,
           }} />
 
           {/* Center state icon */}
@@ -773,8 +775,48 @@ export default function AgentPage() {
           {isLive && <DataTicker color={c.primary} tick={tick} />}
         </div>
 
+        {/* ── Voice selector ── */}
+        {!isLive && (
+          <div style={{ marginTop: 18, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+            <div style={{ fontSize: 9, color: "#5a6a78", letterSpacing: "0.18em" }}>VOICE</div>
+            <select
+              value={selectedVoice}
+              onChange={e => setSelectedVoice(e.target.value)}
+              disabled={state === "connecting"}
+              style={{
+                background: "#0a0f14",
+                border: `1px solid ${c.primary}44`,
+                color: c.primary,
+                fontSize: 10,
+                letterSpacing: "0.18em",
+                padding: "6px 14px",
+                cursor: "pointer",
+                outline: "none",
+                borderRadius: 1,
+                textTransform: "uppercase" as const,
+                appearance: "none" as const,
+                WebkitAppearance: "none" as const,
+                paddingRight: 28,
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23${c.primary.replace("#", "")}'/%3E%3C/svg%3E")`,
+                backgroundRepeat: "no-repeat",
+                backgroundPosition: "right 10px center",
+              }}
+            >
+              <option value="Aoede">Aoede ★</option>
+              <option value="Puck">Puck ★</option>
+              <option value="Charon">Charon</option>
+              <option value="Kore">Kore</option>
+              <option value="Fenrir">Fenrir</option>
+              <option value="Pulcherrima">Pulcherrima</option>
+              <option value="Rasalgethi">Rasalgethi</option>
+              <option value="Despina">Despina</option>
+              <option value="Umbriel">Umbriel</option>
+            </select>
+          </div>
+        )}
+
         {/* ── CTA ── */}
-        <div style={{ marginTop: 22 }}>
+        <div style={{ marginTop: 14 }}>
           {!isLive ? (
             <button onClick={connect} disabled={state === "connecting"} style={{
               background: "transparent",

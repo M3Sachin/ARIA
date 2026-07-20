@@ -89,11 +89,13 @@ export async function clearDbSessions(): Promise<void> {
   return apiFetch("/api/sessions", { method: "DELETE" });
 }
 
-export function buildWsUrl(ticket: string): string {
+export function buildWsUrl(ticket: string, voice?: string): string {
   const wsBase =
     process.env.NEXT_PUBLIC_BACKEND_WS_URL ??
     (typeof window !== "undefined"
       ? window.location.origin.replace(/^http/, "ws")
       : "ws://localhost:8000");
-  return `${wsBase}/ws/voice?ticket=${encodeURIComponent(ticket)}`;
+  let url = `${wsBase}/ws/voice?ticket=${encodeURIComponent(ticket)}`;
+  if (voice) url += `&voice=${encodeURIComponent(voice)}`;
+  return url;
 }

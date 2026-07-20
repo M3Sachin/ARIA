@@ -27,7 +27,7 @@ const nextConfig = {
               "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
               "style-src 'self' 'unsafe-inline'",
               "media-src 'self' blob:",
-              "connect-src 'self' wss: https:",
+              "connect-src 'self' ws: wss: https:",
               "worker-src 'self' blob:",
               "img-src 'self' data:",
             ].join("; "),
